@@ -10,3 +10,8 @@ output "lf_tags_created" {
     [for k, _ in aws_lakeformation_lf_tag.extra    : k]
   )
 }
+
+output "admins_effective" {
+  description = "Effective Lake Formation admins configured (caller + extras)."
+  value       = aws_lakeformation_data_lake_settings.this.admins
+}
