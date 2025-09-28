@@ -1,16 +1,16 @@
-
 # -----------------------
 # IAM Role for Redshift
 # -----------------------
 resource "aws_iam_role" "redshift_serverless_role" {
-  name               = var.iam_role_name
-  description        = "IAM role for Redshift Serverless to access AWS services"
+  name        = var.iam_role_name
+  description = "IAM role for Redshift Serverless to access AWS services"
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect = "Allow",
+      Effect    = "Allow",
       Principal = { Service = "redshift.amazonaws.com" },
-      Action   = "sts:AssumeRole"
+      Action    = "sts:AssumeRole"
     }]
   })
 
@@ -32,7 +32,10 @@ resource "random_password" "admin" {
 }
 
 locals {
-  effective_admin_password = coalesce(var.admin_password, try(random_password.admin[0].result, null))
+  effective_admin_password = coalesce(
+    var.admin_password,
+    try(random_password.admin[0].result, null)
+  )
 }
 
 # -----------------------
@@ -45,8 +48,8 @@ resource "aws_secretsmanager_secret" "redshift" {
 }
 
 resource "aws_secretsmanager_secret_version" "redshift" {
-  count        = var.existing_admin_secret_arn == null ? 1 : 0
-  secret_id    = aws_secretsmanager_secret.redshift[0].id
+  count     = var.existing_admin_secret_arn == null ? 1 : 0
+  secret_id = aws_secretsmanager_secret.redshift[0].id
   secret_string = jsonencode({
     username = var.admin_user
     password = local.effective_admin_password
@@ -64,11 +67,11 @@ locals {
 # Namespace
 # -----------------------
 resource "aws_redshiftserverless_namespace" "this" {
-  namespace_name     = var.namespace_name
-  db_name            = var.database_name
-  admin_username     = var.admin_user
+  namespace_name      = var.namespace_name
+  db_name             = var.database_name
+  admin_username      = var.admin_user
   admin_user_password = local.effective_admin_password
-  iam_roles          = [aws_iam_role.redshift_serverless_role.arn]
+  iam_roles           = [aws_iam_role.redshift_serverless_role.arn]
 
   tags = var.tags
 }
@@ -105,28 +108,38 @@ resource "aws_security_group_rule" "ingress" {
 }
 
 locals {
-  security_group_id = var.existing_security_group_id != null ? var.existing_security_group_id : try(aws_security_group.this[0].id, null)
+  security_group_id = coalesce(
+    var.existing_security_group_id,
+    try(aws_security_group.this[0].id, null)
+  )
 }
 
 # -----------------------
 # Workgroup
 # -----------------------
 resource "aws_redshiftserverless_workgroup" "this" {
-  workgroup_name        = var.workgroup_name
-  namespace_name        = aws_redshiftserverless_namespace.this.namespace_name
-  base_capacity         = var.base_capacity
-  publicly_accessible   = var.publicly_accessible
-  enhanced_vpc_routing  = var.enhanced_vpc_routing
-  security_group_ids    = [local.security_group_id]
-  subnet_ids            = var.subnet_ids
-  tags                  = var.tags
+  workgroup_name       = var.workgroup_name
+  namespace_name       = aws_redshiftserverless_namespace.this.namespace_name
+  base_capacity        = var.base_capacity
+  publicly_accessible  = var.publicly_accessible
+  enhanced_vpc_routing = var.enhanced_vpc_routing
+  security_group_ids   = [local.security_group_id]
+  subnet_ids           = var.subnet_ids
+  tags                 = var.tags
 }
 
+# -----------------------
 # Helpful computed strings
+# -----------------------
 locals {
-  endpoint      = aws_redshiftserverless_workgroup.this.endpoint
-  port          = var.port
-  jdbc_url      = "jdbc:redshift://${local.endpoint}:${local.port}/${var.database_name}"
+  # Workgroup endpoint is a list with one object; extract safely
+  endpoint_obj     = try(aws_redshiftserverless_workgroup.this.endpoint[0], null)
+  endpoint_address = try(local.endpoint_obj.address, null)
+  endpoint_port    = try(local.endpoint_obj.port, var.port)
+
+  # Single-line ternary avoids parse errors
+  jdbc_url = local.endpoint_address != null ? format("jdbc:redshift://%s:%s/%s", local.endpoint_address, local.endpoint_port, var.database_name) : null
+
   workgroup_arn = aws_redshiftserverless_workgroup.this.arn
   role_arn      = aws_iam_role.redshift_serverless_role.arn
 }

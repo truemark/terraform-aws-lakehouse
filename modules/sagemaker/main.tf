@@ -5,6 +5,12 @@ locals {
   account_id = data.aws_caller_identity.this.account_id
   region     = data.aws_region.current.id
 
+  # First raw bucket ARN if provided, else null
+  first_raw_bucket_arn = length(var.raw_s3_bucket_arns) > 0 ? var.raw_s3_bucket_arns[0] : null
+
+  # Convert ARN (arn:aws:s3:::bucket) -> URI (s3://bucket) and build output path
+  s3_output_path = local.first_raw_bucket_arn != null ? format("%s/studio-output/", replace(local.first_raw_bucket_arn, "arn:aws:s3:::", "s3://")) : null
+
   # Base tags
   base_tags = merge(
     {
@@ -133,17 +139,19 @@ resource "aws_sagemaker_domain" "this" {
   subnet_ids = var.private_subnet_ids
 
   app_network_access_type = "VpcOnly" # private Studio
+
   domain_settings {
     security_group_ids = [aws_security_group.studio_sg.id]
   }
 
   default_user_settings {
-    execution_role = var.create_execution_role ? aws_iam_role.studio_exec[0].arn : null
+    # Avoid indexing a non-existent resource when create_execution_role = false
+    execution_role = length(aws_iam_role.studio_exec) > 0 ? aws_iam_role.studio_exec[0].arn : null
 
     # Optional: studio settings (safe defaults)
     sharing_settings {
       notebook_output_option = "Allowed"
-      s3_output_path         = length(var.raw_s3_bucket_arns) > 0 ? "${var.raw_s3_bucket_arns[0]}/studio-output/" : null
+      s3_output_path         = local.s3_output_path
     }
 
     jupyter_server_app_settings {
@@ -154,22 +162,19 @@ resource "aws_sagemaker_domain" "this" {
 
     kernel_gateway_app_settings {
       default_resource_spec {
-        instance_type = "ml.t3.medium"
-        sage_maker_image_arn = null
+        instance_type       = "ml.t3.medium"
+        sagemaker_image_arn = null
       }
     }
   }
 
-  dynamic "kms_key_id" {
-    for_each = var.kms_key_id == null ? [] : [var.kms_key_id]
-    content  = var.kms_key_id
-  }
+  # kms_key_id is a simple argument (may be null)
+  kms_key_id = var.kms_key_id
 
   tags = local.base_tags
 
   depends_on = [
-    aws_security_group.studio_sg,
-    aws_iam_role_policy_attachment.attach_data
+    aws_security_group.studio_sg
   ]
 }
 
@@ -179,13 +184,16 @@ resource "aws_sagemaker_domain" "this" {
 resource "aws_sagemaker_user_profile" "team" {
   for_each = { for u in var.user_profiles : u.name => u }
 
-  domain_id      = aws_sagemaker_domain.this.id
+  domain_id         = aws_sagemaker_domain.this.id
   user_profile_name = each.value.name
 
   user_settings {
-    execution_role = try(each.value.execution_role_arn, var.create_execution_role ? aws_iam_role.studio_exec[0].arn : null)
+    # Prefer a per-user override; else fall back to the shared role if it exists
+    execution_role = coalesce(
+      try(each.value.execution_role_arn, null),
+      length(aws_iam_role.studio_exec) > 0 ? aws_iam_role.studio_exec[0].arn : null
+    )
 
-    # Allow per-user tags if provided
     security_groups = [aws_security_group.studio_sg.id]
 
     jupyter_server_app_settings {
